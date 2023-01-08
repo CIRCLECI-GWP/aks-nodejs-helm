@@ -1,0 +1,107 @@
+version: 2.1
+orbs:
+  azure-acr: circleci/azure-acr@0.2.1
+  azure-aks: circleci/azure-aks@0.3.0
+jobs:
+  update-helm-chart:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - run:
+          name: Install yq - portable yaml processor
+          command: |
+            URL=https://github.com/mikefarah/yq/releases/download/3.3.4/yq_linux_amd64
+            [ -w /usr/local/bin ] && SUDO="" || SUDO=sudo
+            $SUDO wget $URL
+            $SUDO mv ./yq_linux_amd64 /usr/local/bin/yq
+            $SUDO chmod +x /usr/local/bin/yq
+      - checkout
+      - run:
+          name: Update Values.yaml
+          command: |
+            yq w -i $CHART_NAME/values.yaml image.repository "$ACR_LOGIN_SERVER/$APP_NAME"
+            yq w -i $CHART_NAME/values.yaml image.tag "$CIRCLE_SHA1"
+            yq w -i $CHART_NAME/Chart.yaml version "0.$CIRCLE_BUILD_NUM.0"
+      - add_ssh_keys:
+          fingerprints:
+            - "$SSH_FINGERPRINT"
+      - run:
+          name: Commit & Push to GitHub
+          command: |
+            git config user.email "$GITHUB_EMAIL"
+            git config user.name "CircleCI User"
+            git checkout $CIRCLE_BRANCH           
+            git commit -am "Update Values.yaml [skip ci]"
+            git push origin $CIRCLE_BRANCH
+  package-push-helm-chart:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - run:
+          name: Install and configure helm
+          command: sudo curl -L https://get.helm.sh/helm-v3.10.1-linux-amd64.tar.gz | tar xz && sudo mv linux-amd64/helm /bin/helm && sudo rm -rf linux-amd64
+      - checkout
+      - run: echo 'export RELEASE_TAG=$((CIRCLE_BUILD_NUM-1))' >> $BASH_ENV
+      - run:
+          name: Pull Updated code from repo
+          command: git pull origin $CIRCLE_BRANCH
+      - run:
+          name: Packaging the Helm Chart
+          command: helm package $CHART_NAME
+      - run:
+          name: Login to Helm Registry
+          command: helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password $ACR_PASSWORD
+      - run:
+          name: Pushing Helm chart to registry
+          command: helm push "$CHART_NAME-0.$RELEASE_TAG.0.tgz" "oci://$ACR_LOGIN_SERVER/helm"
+  install-helm-chart:
+    docker:
+      - image: cimg/base:stable
+    parameters:
+      cluster-name:
+        description: |
+          Name of the AKS cluster
+        type: string
+      resource-group:
+        description: |
+          Resource group that the cluster is in
+        type: string
+    steps:
+      - checkout
+      - run: echo 'export RELEASE_TAG=$((CIRCLE_BUILD_NUM-3))' >> $BASH_ENV
+      - run:
+          name: Pull Updated code from repo
+          command: git pull origin $CIRCLE_BRANCH
+      - azure-aks/update-kubeconfig-with-credentials:
+          cluster-name: << parameters.cluster-name >>
+          install-kubectl: true
+          perform-login: true
+          resource-group: << parameters.resource-group >>
+      - run:
+          name: Install and configure helm
+          command: sudo curl -L https://get.helm.sh/helm-v3.10.1-linux-amd64.tar.gz | tar xz && sudo mv linux-amd64/helm /bin/helm && sudo rm -rf linux-amd64
+      - run:
+          name: Login to Helm Registry
+          command: helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password $ACR_PASSWORD
+      - run:
+          name: helm install
+          command: bash ./script.sh "0.$RELEASE_TAG.0" $NAMESPACE $CHART_NAME $ACR_LOGIN_SERVER
+workflows:
+  Deploy-App-on-AKS:
+    jobs:
+      - azure-acr/build-and-push-image:
+          login-server-name: $ACR_LOGIN_SERVER
+          registry-name: $ACR_REGISTRY_NAME
+          repo: $APP_NAME
+          tag: $CIRCLE_SHA1,latest
+      - update-helm-chart:
+          requires:
+            - azure-acr/build-and-push-image
+      - package-push-helm-chart:
+          requires:
+            - update-helm-chart
+      - install-helm-chart:
+          cluster-name: $CLUSTER_NAME
+          resource-group: $RESOURCE_GROUP
+          requires:
+            - package-push-helm-chart
