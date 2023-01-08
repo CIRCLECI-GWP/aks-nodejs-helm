@@ -1,0 +1,9 @@
+replicaCount: 1
+image:
+  name: aks-nodejs-helm
+  repository: nodehelmregistry.azurecr.io/aks-nodejs-helm
+  tag: latest
+service:
+  type: LoadBalancer
+  port: 80
+  containerPort: 1337
