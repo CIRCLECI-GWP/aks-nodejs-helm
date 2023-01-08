@@ -1,0 +1,30 @@
+{
+  "name": "aks-nodejs-helm",
+  "version": "1.0.0",
+  "description": "Tutorial guiding how to deploy a simple nodejs application helm chart to AKS using Circle CI",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "mocha"
+  },
+  "keywords": [
+    "aks",
+    "node"
+  ],
+  "author": "Avik Kundu",
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^1.17.2",
+    "express": "^4.15.3",
+    "morgan": "^1.8.2"
+  },
+  "devDependencies": {
+    "chai": "^4.1.2",
+    "mocha": "^5.2.0",
+    "request": "^2.88.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:Lucifergene/aks-nodejs-helm.git"
+  }
+}
