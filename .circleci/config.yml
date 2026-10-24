@@ -1,16 +1,19 @@
 version: 2.1
+
 orbs:
-  azure-acr: circleci/azure-acr@0.2.1
-  azure-aks: circleci/azure-aks@0.3.0
+  azure-acr: circleci/azure-acr@0.2.3
+  azure-cli: circleci/azure-cli@1.3.2
+  helm: circleci/helm@3.2.0
+
 jobs:
   update-helm-chart:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/base:2026.10
     steps:
       - run:
           name: Install yq - portable yaml processor
           command: |
-            URL=https://github.com/mikefarah/yq/releases/download/3.3.4/yq_linux_amd64
+            URL=https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64
             [ -w /usr/local/bin ] && SUDO="" || SUDO=sudo
             $SUDO wget $URL
             $SUDO mv ./yq_linux_amd64 /usr/local/bin/yq
@@ -19,12 +22,11 @@ jobs:
       - run:
           name: Update Values.yaml
           command: |
-            yq w -i $CHART_NAME/values.yaml image.repository "$ACR_LOGIN_SERVER/$APP_NAME"
-            yq w -i $CHART_NAME/values.yaml image.tag "$CIRCLE_SHA1"
-            yq w -i $CHART_NAME/Chart.yaml version "0.$CIRCLE_BUILD_NUM.0"
-      - add_ssh_keys:
-          fingerprints:
-            - "$SSH_FINGERPRINT"
+            export IMAGE_REPOSITORY="$ACR_LOGIN_SERVER/$APP_NAME"
+            export CHART_VERSION="0.<< pipeline.number >>.0"
+            yq -i '.image.repository = strenv(IMAGE_REPOSITORY)' $CHART_NAME/values.yaml
+            yq -i '.image.tag = strenv(CIRCLE_SHA1)' $CHART_NAME/values.yaml
+            yq -i '.version = strenv(CHART_VERSION)' $CHART_NAME/Chart.yaml
       - run:
           name: Commit & Push to GitHub
           command: |
@@ -33,15 +35,14 @@ jobs:
             git checkout $CIRCLE_BRANCH           
             git commit -am "Update Values.yaml [skip ci]"
             git push origin $CIRCLE_BRANCH
+
   package-push-helm-chart:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/base:2026.10
     steps:
-      - run:
-          name: Install and configure helm
-          command: sudo curl -L https://get.helm.sh/helm-v3.10.1-linux-amd64.tar.gz | tar xz && sudo mv linux-amd64/helm /bin/helm && sudo rm -rf linux-amd64
+      - helm/install_helm_client:
+          version: v4.3.1
       - checkout
-      - run: echo 'export RELEASE_TAG=$((CIRCLE_BUILD_NUM-1))' >> $BASH_ENV
       - run:
           name: Pull Updated code from repo
           command: git pull origin $CIRCLE_BRANCH
@@ -50,13 +51,14 @@ jobs:
           command: helm package $CHART_NAME
       - run:
           name: Login to Helm Registry
-          command: helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password $ACR_PASSWORD
+          command: echo "$ACR_PASSWORD" | helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password-stdin
       - run:
           name: Pushing Helm chart to registry
-          command: helm push "$CHART_NAME-0.$RELEASE_TAG.0.tgz" "oci://$ACR_LOGIN_SERVER/helm"
+          command: helm push "$CHART_NAME-0.<< pipeline.number >>.0.tgz" "oci://$ACR_LOGIN_SERVER/helm"
+
   install-helm-chart:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/base:2026.10
     parameters:
       cluster-name:
         description: |
@@ -68,28 +70,30 @@ jobs:
         type: string
     steps:
       - checkout
-      - run: echo 'export RELEASE_TAG=$((CIRCLE_BUILD_NUM-3))' >> $BASH_ENV
       - run:
           name: Pull Updated code from repo
           command: git pull origin $CIRCLE_BRANCH
-      - azure-aks/update-kubeconfig-with-credentials:
-          cluster-name: << parameters.cluster-name >>
-          install-kubectl: true
-          perform-login: true
-          resource-group: << parameters.resource-group >>
+      - azure-cli/install
+      - azure-cli/login-with-service-principal
       - run:
-          name: Install and configure helm
-          command: sudo curl -L https://get.helm.sh/helm-v3.10.1-linux-amd64.tar.gz | tar xz && sudo mv linux-amd64/helm /bin/helm && sudo rm -rf linux-amd64
+          name: Get AKS credentials
+          command: az aks get-credentials --resource-group << parameters.resource-group >> --name << parameters.cluster-name >>
+      - helm/install_helm_client:
+          version: v4.3.1
       - run:
           name: Login to Helm Registry
-          command: helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password $ACR_PASSWORD
+          command: echo "$ACR_PASSWORD" | helm registry login $ACR_LOGIN_SERVER --username $ACR_USERNAME --password-stdin
       - run:
           name: helm install
-          command: bash ./script.sh "0.$RELEASE_TAG.0" $NAMESPACE $CHART_NAME $ACR_LOGIN_SERVER
+          command: bash ./script.sh "0.<< pipeline.number >>.0" $NAMESPACE $CHART_NAME $ACR_LOGIN_SERVER
+
 workflows:
   Deploy-App-on-AKS:
     jobs:
       - azure-acr/build-and-push-image:
+          executor:
+            name: azure-acr/default
+            image: ubuntu-2404:current
           login-server-name: $ACR_LOGIN_SERVER
           registry-name: $ACR_REGISTRY_NAME
           repo: $APP_NAME
