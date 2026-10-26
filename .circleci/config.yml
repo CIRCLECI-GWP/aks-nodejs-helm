@@ -74,7 +74,9 @@ jobs:
           name: Pull Updated code from repo
           command: git pull origin $CIRCLE_BRANCH
       - azure-cli/install
-      - azure-cli/login-with-service-principal
+      - run:
+          name: Log in to Azure with the service principal
+          command: az login --service-principal --tenant "$AZURE_SP_TENANT" --username "$AZURE_SP" --password "$AZURE_SP_PASSWORD" --output none
       - run:
           name: Get AKS credentials
           command: az aks get-credentials --resource-group << parameters.resource-group >> --name << parameters.cluster-name >>
